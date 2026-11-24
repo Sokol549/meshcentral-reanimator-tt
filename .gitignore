@@ -1,0 +1,7 @@
+node_modules/
+reanimatortt-settings.json
+*.log
+*.tmp
+tests/mock_datapath*
+.DS_Store
+Thumbs.db

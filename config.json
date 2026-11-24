@@ -1,0 +1,17 @@
+{
+  "name": "MeshCentral Reanimator TT (AI)",
+  "shortName": "reanimatortt",
+  "version": "1.0.0",
+  "author": "sokol549",
+  "description": "Автономный ИИ-агент экстренной диагностики и восстановления аптечных касс и серверов (Реаниматор ТТ) прямо из карточки статуса компьютера без передачи файлов на целевое устройство.",
+  "hasAdminPanel": false,
+  "meshCentralCompat": ">=1.1.0",
+  "homepage": "https://github.com/Sokol549/meshcentral-reanimator-tt",
+  "changelogUrl": "https://raw.githubusercontent.com/Sokol549/meshcentral-reanimator-tt/main/changelog.md",
+  "configUrl": "https://raw.githubusercontent.com/Sokol549/meshcentral-reanimator-tt/main/config.json",
+  "downloadUrl": "https://github.com/Sokol549/meshcentral-reanimator-tt/archive/refs/heads/main.zip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sokol549/meshcentral-reanimator-tt.git"
+  }
+}

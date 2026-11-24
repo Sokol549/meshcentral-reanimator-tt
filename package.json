@@ -1,0 +1,20 @@
+{
+  "name": "meshcentral-reanimator-tt",
+  "version": "1.0.0",
+  "description": "Автономный ИИ-агент экстренной диагностики и восстановления аптечных касс и серверов (Реаниматор ТТ) прямо из карточки статуса компьютера без передачи файлов на целевое устройство.",
+  "main": "reanimatortt.js",
+  "scripts": {
+    "test": "node tests/test-backend.js && node tests/test-tools.js && node tests/test-security.js"
+  },
+  "keywords": [
+    "meshcentral",
+    "plugin",
+    "reanimator",
+    "ai",
+    "pharmacy",
+    "1c",
+    "atol"
+  ],
+  "author": "sokol549",
+  "license": "MIT"
+}
