@@ -6,7 +6,7 @@ const https = require('https');
 const http = require('http');
 const url = require('url');
 
-const PLUGIN_VERSION = '1.0.1';
+const PLUGIN_VERSION = '1.0.2';
 
 function normalizeModelName(m) {
     if (!m || typeof m !== 'string') return 'gpt-6-luna';
@@ -765,55 +765,87 @@ function create(parent) {
                 var chunks = [];
                 var totalSize = 0;
 
-                var protocol = CreateRemoteFiles(
-                    function (raw) {
-                        var m = raw;
-                        try { if (typeof m === 'string') m = JSON.parse(m); } catch (e) { return; }
-                        if (!m) return;
-                        if (Number(m.reqid) === 88 && Array.isArray(m.dir)) {
-                            var hit = m.dir.some(function (f) { return f.n === marker + '.json'; });
-                            if (hit && !downloading) {
-                                downloading = true;
-                                redirect.sendText(JSON.stringify({ action: 'download', sub: 'start', id: downloadId, path: resultFile }));
-                            }
-                        } else if (m.action === 'download' && String(m.id) === String(downloadId)) {
-                            if (m.sub === 'start') {
-                                redirect.sendText(JSON.stringify({ action: 'download', sub: 'startack', id: downloadId }));
-                            } else if (m.sub === 'cancel') {
-                                finish(new Error('Не удалось прочитать файл результата'));
-                            }
+                function handleJsonMessage(raw) {
+                    var m = raw;
+                    try { if (typeof m === 'string') m = JSON.parse(m); } catch (e) { return; }
+                    if (!m) return;
+                    if (Number(m.reqid) === 88 && Array.isArray(m.dir)) {
+                        var hit = m.dir.some(function (f) { return f.n === marker + '.json'; });
+                        if (hit && !downloading) {
+                            downloading = true;
+                            redirect.sendText(JSON.stringify({ action: 'download', sub: 'start', id: downloadId, path: resultFile }));
                         }
-                    },
-                    function (data) {
-                        var b = (typeof data === 'string')
-                            ? Uint8Array.from(data, function (c) { return c.charCodeAt(0) & 255; })
-                            : (data instanceof ArrayBuffer) ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-
-                        if (b.length < 4) return finish(new Error('Некорректный блок данных'));
-                        totalSize += b.length - 4;
-                        chunks.push(b.slice(4));
-
-                        if (b[3] & 1) {
-                            var all = new Uint8Array(totalSize);
-                            var pos = 0;
-                            chunks.forEach(function (c) { all.set(c, pos); pos += c.length; });
-                            var jsonStr = new TextDecoder('utf-8').decode(all);
-
-                            try {
-                                redirect.sendText(JSON.stringify({ action: 'rm', reqid: 89, path: tempDir, delfiles: [marker + '.json'], rec: false }));
-                            } catch (_) { }
-
-                            try {
-                                var parsedResult = JSON.parse(jsonStr);
-                                finish(null, parsedResult);
-                            } catch (e) {
-                                finish(new Error('Ошибка разбора JSON: ' + e.message));
-                            }
-                        } else {
-                            redirect.sendText(JSON.stringify({ action: 'download', sub: 'ack', id: downloadId }));
+                    } else if (m.action === 'download' && String(m.id) === String(downloadId)) {
+                        if (m.sub === 'start') {
+                            redirect.sendText(JSON.stringify({ action: 'download', sub: 'startack', id: downloadId }));
+                        } else if (m.sub === 'cancel') {
+                            finish(new Error('Не удалось прочитать файл результата (отмена от агента)'));
                         }
                     }
-                );
+                }
+
+                function onBinaryData(data) {
+                    if (!data) return;
+                    var b;
+                    if (typeof data === 'string') {
+                        b = new Uint8Array(data.length);
+                        for (var i = 0; i < data.length; i++) b[i] = data.charCodeAt(i) & 255;
+                    } else if (data instanceof ArrayBuffer) {
+                        b = new Uint8Array(data);
+                    } else if (ArrayBuffer.isView(data)) {
+                        b = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+                    } else {
+                        return;
+                    }
+
+                    if (b.length === 0) return;
+
+                    // In MeshCentral protocol 5:
+                    // If packet starts with '{' (123) or byte 0 != 1, this is a JSON control message arriving via binary channel!
+                    if (b[0] !== 1) {
+                        var str = '';
+                        if (b.length < 16000) {
+                            str = String.fromCharCode.apply(null, b);
+                        } else {
+                            for (var j = 0; j < b.length; j++) str += String.fromCharCode(b[j]);
+                        }
+                        handleJsonMessage(str);
+                        return;
+                    }
+
+                    if (b.length < 4) return finish(new Error('Некорректный блок данных файла'));
+
+                    var payload = b.slice(4);
+                    totalSize += payload.length;
+                    chunks.push(payload);
+
+                    // Byte 3 bit 0 indicates EOF (end of file)
+                    if (b[3] & 1) {
+                        var all = new Uint8Array(totalSize);
+                        var pos = 0;
+                        chunks.forEach(function (c) { all.set(c, pos); pos += c.length; });
+                        var jsonStr = new TextDecoder('utf-8').decode(all);
+                        if (jsonStr.charCodeAt(0) === 0xFEFF) {
+                            jsonStr = jsonStr.slice(1);
+                        }
+                        jsonStr = jsonStr.trim();
+
+                        try {
+                            redirect.sendText(JSON.stringify({ action: 'rm', reqid: 89, path: tempDir, delfiles: [marker + '.json'], rec: false }));
+                        } catch (_) { }
+
+                        try {
+                            var parsedResult = JSON.parse(jsonStr);
+                            finish(null, parsedResult);
+                        } catch (e) {
+                            finish(new Error('Ошибка разбора JSON: ' + e.message + ' (длина: ' + jsonStr.length + ', превью: ' + jsonStr.substring(0, 100) + ')'));
+                        }
+                    } else {
+                        redirect.sendText(JSON.stringify({ action: 'download', sub: 'ack', id: downloadId }));
+                    }
+                }
+
+                var protocol = CreateRemoteFiles(handleJsonMessage, onBinaryData);
 
                 try {
                     redirect = CreateAgentRedirect(window.meshserver, protocol, window.serverPublicNamePort, window.authCookie, window.authRelayCookie, window.domainUrl);
