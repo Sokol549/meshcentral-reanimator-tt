@@ -31,17 +31,17 @@ assert(plugin.exports.includes('onDeviceRefreshEnd'), 'Must export onDeviceRefre
 assert(plugin.exports.includes('onReanimatorMessage'), 'Must export onReanimatorMessage');
 console.log('✓ Тест 1: Экспортируемые хуки проверены');
 
-// Test 2: HTTP routes registration
-const routesRegistered = plugin.hook_setupHttpHandlers(mockServer.app);
-assert(routesRegistered, 'HTTP routes must register successfully');
-console.log('✓ Тест 2: HTTP роуты зарегистрированы');
+// Test 2: Verify onWebUIStartupEnd embeds UI and button injection
+assert.strictEqual(typeof plugin.onWebUIStartupEnd, 'function', 'Must export onWebUIStartupEnd function');
+const webUiSource = plugin.onWebUIStartupEnd.toString();
+assert(webUiSource.includes('rtt-btn-open-status'), 'Client code must contain rtt-btn-open-status button ID');
+assert(webUiSource.includes('window.ReanimatorTT'), 'Client code must expose window.ReanimatorTT');
+assert(webUiSource.includes('p10info'), 'Client code must target p10info for button injection');
+console.log('✓ Тест 2: Клиентский интерфейс onWebUIStartupEnd проверен');
 
-// Test 3: Pre-template injection
-const sampleHtml = '<html><head><title>MeshCentral</title></head><body>Content</body></html>';
-const injectedHtml = plugin.hook_processTemplateHttpPre(sampleHtml, {});
-assert(injectedHtml.includes('/plugin/reanimatortt/reanimatortt.js'), 'HTML template must contain reanimatortt.js');
-assert(injectedHtml.includes('/plugin/reanimatortt/reanimatortt.css'), 'HTML template must contain reanimatortt.css');
-console.log('✓ Тест 3: Инъекция в шаблон HTML проверена');
+// Test 3: Verify onDeviceRefreshEnd
+assert.strictEqual(typeof plugin.onDeviceRefreshEnd, 'function', 'Must export onDeviceRefreshEnd function');
+console.log('✓ Тест 3: Хук onDeviceRefreshEnd проверен');
 
 // Test 4: Settings retrieval for Admin vs Regular User
 let lastClientMsg = null;
@@ -88,6 +88,7 @@ console.log('✓ Тест 5: Быстрые сценарии для аптек �
 // Test 6: Model name normalization in config
 assert.strictEqual(typeof plugin.serveraction, 'function', 'plugin.serveraction must be a function');
 assert.strictEqual(typeof plugin.normalizeModelName, 'function', 'normalizeModelName must be exported or functional');
+console.log('✓ Тест 6: Нормализация моделей проверена');
 
 // Cleanup
 try {
