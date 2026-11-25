@@ -6,7 +6,7 @@ const https = require('https');
 const http = require('http');
 const url = require('url');
 
-const PLUGIN_VERSION = '1.0.2';
+const PLUGIN_VERSION = '1.0.3';
 
 function normalizeModelName(m) {
     if (!m || typeof m !== 'string') return 'gpt-6-luna';
@@ -44,6 +44,7 @@ function create(parent) {
         baseUrl: process.env.REANIMATOR_BASE_URL || 'https://ai.starimg.ru/v1',
         model: 'gpt-6-luna',
         timeoutSeconds: 60,
+        cmdTimeoutSeconds: 180,
         temperature: 0.2,
         maxTokens: 4096,
         requireDangerConfirmation: true
@@ -290,6 +291,7 @@ function create(parent) {
             if (typeof s.apiKey === 'string' && s.apiKey.trim() && !s.apiKey.includes('...')) clean.apiKey = s.apiKey.trim();
             if (typeof s.model === 'string' && s.model.trim()) clean.model = normalizeModelName(s.model);
             if (Number.isInteger(s.timeoutSeconds) && s.timeoutSeconds >= 10 && s.timeoutSeconds <= 300) clean.timeoutSeconds = s.timeoutSeconds;
+            if (Number.isInteger(s.cmdTimeoutSeconds) && s.cmdTimeoutSeconds >= 15 && s.cmdTimeoutSeconds <= 600) clean.cmdTimeoutSeconds = s.cmdTimeoutSeconds;
             if (typeof s.temperature === 'number' && s.temperature >= 0 && s.temperature <= 1) clean.temperature = s.temperature;
             if (Number.isInteger(s.maxTokens) && s.maxTokens >= 512 && s.maxTokens <= 32768) clean.maxTokens = s.maxTokens;
             if (typeof s.requireDangerConfirmation === 'boolean') clean.requireDangerConfirmation = s.requireDangerConfirmation;
@@ -616,6 +618,48 @@ function create(parent) {
             .rtt-settings-row label { flex: 1; }
             .rtt-checkbox-label { flex-direction: row !important; align-items: center; gap: 8px !important; cursor: pointer; }
             .rtt-settings-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
+
+            /* Bulk Mode Styles */
+            .rtt-bulk-panel {
+                background: #182234; border: 1px solid #2d3748; border-radius: 8px; padding: 12px;
+                display: flex; flex-direction: column; gap: 8px;
+            }
+            .rtt-bulk-summary-bar {
+                display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+                font-size: 13px; font-weight: 600; color: #f1f5f9; padding-bottom: 8px; border-bottom: 1px solid #2d3748;
+            }
+            .rtt-bulk-counts { display: flex; gap: 8px; font-size: 12px; font-weight: 500; }
+            .rtt-bulk-count-item { padding: 2px 8px; border-radius: 12px; background: #0f172a; }
+            .rtt-bulk-list {
+                max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+            }
+            .rtt-bulk-list::-webkit-scrollbar { width: 5px; }
+            .rtt-bulk-list::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+            .rtt-bulk-row {
+                background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 8px 10px;
+                display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px;
+            }
+            .rtt-bulk-dev-info { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 200px; }
+            .rtt-bulk-dev-name { color: #f1f5f9; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+            .rtt-bulk-dev-ip { color: #64748b; font-size: 11px; white-space: nowrap; }
+            .rtt-bulk-badge {
+                padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap;
+            }
+            .rtt-badge-pending { background: #334155; color: #94a3b8; }
+            .rtt-badge-running { background: #1e3a8a; color: #93c5fd; animation: rtt-pulse 1.5s infinite ease-in-out; }
+            .rtt-badge-ok { background: #064e3b; color: #6ee7b7; }
+            .rtt-badge-error { background: #7f1d1d; color: #fca5a5; }
+            .rtt-badge-offline { background: #374151; color: #9ca3af; }
+            .rtt-bulk-dev-btn {
+                background: #1e293b; border: 1px solid #475569; color: #cbd5e1; border-radius: 4px;
+                padding: 2px 8px; font-size: 11px; cursor: pointer;
+            }
+            .rtt-bulk-dev-btn:hover { background: #334155; color: #ffffff; }
+            .rtt-bulk-log-preview {
+                width: 100%; margin: 6px 0 0 0; background: #070b14; border: 1px solid #1e293b;
+                border-radius: 4px; padding: 8px; font-size: 11px; font-family: Consolas, Monaco, monospace;
+                max-height: 180px; overflow-y: auto; color: #cbd5e1; white-space: pre-wrap; word-break: break-all;
+            }
         `;
         document.head.appendChild(style);
 
@@ -627,6 +671,67 @@ function create(parent) {
         var quickScenarios = [];
         var pluginSettings = null;
         var isAdminUser = false;
+        var isBulkMode = false;
+        var bulkEntries = [];
+        var standardScenarioScripts = {
+            'express_diag': [
+                "$ErrorActionPreference = 'SilentlyContinue';",
+                "Write-Host '=== ДИСКИ ===';",
+                "Get-Volume | Where-Object { $_.DriveLetter } | ForEach-Object { $_.DriveLetter + ': ' + [math]::Round($_.SizeRemaining/1GB,2) + ' GB свободно из ' + [math]::Round($_.Size/1GB,2) + ' GB' };",
+                "Write-Host '=== СЛУЖБЫ ===';",
+                "Get-Service -Name 'Spooler', 'EoUService', '*1C*', '*Atol*' | ForEach-Object { $_.Name + ': ' + $_.Status + ' (' + $_.StartType + ')' };",
+                "Write-Host '=== ЖУРНАЛ ОШИБОК 24Ч ===';",
+                "$errCount = (Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; StartTime=(Get-Date).AddDays(-1)} | Measure-Object).Count;",
+                "Write-Host ('Критических ошибок за 24ч: ' + $errCount);"
+            ].join('\r\n'),
+            'print_spooler': [
+                "$ErrorActionPreference = 'SilentlyContinue';",
+                "Stop-Service -Name Spooler -Force;",
+                "Get-ChildItem -Path \"$env:SystemRoot\\System32\\spool\\PRINTERS\\*\" -Force | Remove-Item -Force -Recurse;",
+                "Start-Service -Name Spooler;",
+                "$svc = Get-Service -Name Spooler;",
+                "Write-Host ('Служба Spooler: ' + $svc.Status + ', очередь очищена');"
+            ].join('\r\n'),
+            'clean_disk': [
+                "$ErrorActionPreference = 'SilentlyContinue';",
+                "$freed = 0;",
+                "foreach ($dir in @($env:TEMP, \"$env:SystemRoot\\Temp\")) {",
+                "    if (Test-Path $dir) {",
+                "        $items = Get-ChildItem -Path $dir -Recurse -Force | Where-Object { -not $_.PSIsContainer };",
+                "        $freed += ($items | Measure-Object -Property Length -Sum).Sum;",
+                "        Remove-Item -Path \"$dir\\*\" -Recurse -Force;",
+                "    }",
+                "}",
+                "Write-Host ('Очищено временных файлов: ' + [math]::Round($freed/1MB,2) + ' MB');"
+            ].join('\r\n'),
+            'network_diag': [
+                "$ErrorActionPreference = 'SilentlyContinue';",
+                "Write-Host '=== IP И ШЛЮЗ ===';",
+                "Get-NetIPConfiguration | ForEach-Object { $_.InterfaceAlias + ': ' + ($_.IPv4Address.IPAddress -join ', ') + ' (Шлюз: ' + $_.IPv4DefaultGateway.NextHop + ')' };",
+                "Write-Host '=== ПРОВЕРКА ИНТЕРНЕТА ===';",
+                "$ping = Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet;",
+                "Write-Host ('Связь с интернет (8.8.8.8): ' + $(if($ping){'OK'}else{'НЕДОСТУПЕН'}));"
+            ].join('\r\n'),
+            'atol_eou': [
+                "$ErrorActionPreference = 'SilentlyContinue';",
+                "Write-Host '=== СЛУЖБА EOU ===';",
+                "$eou = Get-Service -Name 'EoUService';",
+                "Write-Host ('EoUService: ' + $(if($eou){$eou.Status}else{'НЕ УСТАНОВЛЕНА'}));",
+                "Write-Host '=== ПРОЦЕСС EthOverUsb ===';",
+                "$p = Get-Process -Name 'EthOverUsb';",
+                "Write-Host ('EthOverUsb.exe: ' + $(if($p){'Запущен (PID ' + $p.Id + ')'}else{'НЕ ЗАПУЩЕН'}));"
+            ].join('\r\n'),
+            '1c_emergency': [
+                "$ErrorActionPreference = 'SilentlyContinue';",
+                "Write-Host '=== ПРОЦЕССЫ 1С ===';",
+                "$procs = Get-Process -Name '1cv8*', '1cv8c*';",
+                "Write-Host ('Активных процессов 1С: ' + ($procs | Measure-Object).Count);",
+                "Write-Host '=== БЛОКИРОВКИ *.1CL / *.cfl ===';",
+                "$locks = Get-ChildItem -Path 'C:\\' -Include '*.1CL','*.cfl' -Recurse -Depth 4;",
+                "Write-Host ('Файлов блокировок найдено: ' + ($locks | Measure-Object).Count);"
+            ].join('\r\n')
+        };
+
 
         function generateId() {
             return 'rtt_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
@@ -736,9 +841,10 @@ function create(parent) {
                     if (err) reject(err); else resolve(data);
                 }
 
+                var cmdTimeoutSec = (pluginSettings && pluginSettings.cmdTimeoutSeconds) ? pluginSettings.cmdTimeoutSeconds : 180;
                 timeoutTimer = setTimeout(function () {
-                    finish(new Error('Таймаут выполнения команды на компьютере (60 сек)'));
-                }, 60000);
+                    finish(new Error('Таймаут выполнения команды на компьютере (' + cmdTimeoutSec + ' сек)'));
+                }, cmdTimeoutSec * 1000);
 
                 if (typeof CreateRemoteFiles !== 'function' || typeof CreateAgentRedirect !== 'function') {
                     try {
@@ -932,7 +1038,10 @@ function create(parent) {
                       <label>API Key<input id="rtt-cfg-key" type="password" placeholder="sk-..."></label>
                       <label>Модель<input id="rtt-cfg-model" type="text" placeholder="gpt-6-luna"></label>
                       <div class="rtt-settings-row">
-                        <label>Таймаут (сек)<input id="rtt-cfg-timeout" type="number" min="10" max="300" value="60"></label>
+                        <label>Таймаут ИИ (сек)<input id="rtt-cfg-timeout" type="number" min="10" max="300" value="60"></label>
+                        <label>Таймаут команд ПК (сек)<input id="rtt-cfg-cmd-timeout" type="number" min="15" max="600" value="180"></label>
+                      </div>
+                      <div class="rtt-settings-row">
                         <label>Температура<input id="rtt-cfg-temp" type="number" min="0" max="1" step="0.1" value="0.2"></label>
                       </div>
                       <label class="rtt-checkbox-label">
@@ -984,6 +1093,7 @@ function create(parent) {
                     var keyInput = document.getElementById('rtt-cfg-key');
                     var modelInput = document.getElementById('rtt-cfg-model');
                     var timeoutInput = document.getElementById('rtt-cfg-timeout');
+                    var cmdTimeoutInput = document.getElementById('rtt-cfg-cmd-timeout');
                     var tempInput = document.getElementById('rtt-cfg-temp');
                     var confirmInput = document.getElementById('rtt-cfg-confirm');
 
@@ -991,6 +1101,7 @@ function create(parent) {
                     if (keyInput) keyInput.value = res.settings.apiKey || '';
                     if (modelInput) modelInput.value = res.settings.model || '';
                     if (timeoutInput) timeoutInput.value = res.settings.timeoutSeconds || 60;
+                    if (cmdTimeoutInput) cmdTimeoutInput.value = res.settings.cmdTimeoutSeconds || 180;
                     if (tempInput) tempInput.value = res.settings.temperature || 0.2;
                     if (confirmInput) confirmInput.checked = res.settings.requireDangerConfirmation !== false;
 
@@ -1010,6 +1121,7 @@ function create(parent) {
             var keyInput = document.getElementById('rtt-cfg-key');
             var modelInput = document.getElementById('rtt-cfg-model');
             var timeoutInput = document.getElementById('rtt-cfg-timeout');
+            var cmdTimeoutInput = document.getElementById('rtt-cfg-cmd-timeout');
             var tempInput = document.getElementById('rtt-cfg-temp');
             var confirmInput = document.getElementById('rtt-cfg-confirm');
 
@@ -1018,6 +1130,7 @@ function create(parent) {
                 apiKey: keyInput ? keyInput.value.trim() : '',
                 model: modelInput ? modelInput.value.trim() : '',
                 timeoutSeconds: timeoutInput ? parseInt(timeoutInput.value, 10) : 60,
+                cmdTimeoutSeconds: cmdTimeoutInput ? parseInt(cmdTimeoutInput.value, 10) : 180,
                 temperature: tempInput ? parseFloat(tempInput.value) : 0.2,
                 requireDangerConfirmation: confirmInput ? confirmInput.checked : true
             };
@@ -1057,9 +1170,14 @@ function create(parent) {
         }
 
         function startScenario(sc) {
-            var inputArea = document.getElementById('rtt-input');
-            if (inputArea) inputArea.value = sc.prompt;
-            handleUserSend();
+            if (isProcessing) return;
+            if (isBulkMode) {
+                executeBulkTask(sc.title, sc.prompt, sc.id);
+            } else {
+                var inputArea = document.getElementById('rtt-input');
+                if (inputArea) inputArea.value = sc.prompt;
+                handleUserSend();
+            }
         }
 
         function appendMessage(role, text, reasoning) {
@@ -1267,18 +1385,340 @@ function create(parent) {
             conversationHistory = [];
             var body = document.getElementById('rtt-chat-body');
             if (body) {
-                body.innerHTML = `
-                    <div class="rtt-welcome-card">
-                      <div class="rtt-welcome-icon">🏥</div>
-                      <h4>История очищена</h4>
-                      <p>ИИ-агент готов к новому сеансу диагностики на компьютере <strong>${escapeHtml((activeNode && activeNode.name) || '')}</strong>.</p>
-                    </div>
-                `;
+                if (isBulkMode) {
+                    renderBulkInitialView();
+                } else {
+                    body.innerHTML = `
+                        <div class="rtt-welcome-card">
+                          <div class="rtt-welcome-icon">🏥</div>
+                          <h4>История очищена</h4>
+                          <p>ИИ-агент готов к новому сеансу диагностики на компьютере <strong>${escapeHtml((activeNode && activeNode.name) || '')}</strong>.</p>
+                        </div>
+                    `;
+                }
             }
             setStatus('Диалог очищен', false);
         }
 
+
+        function updateBulkHeader() {
+            var infoEl = document.getElementById('rtt-device-info');
+            if (!infoEl) return;
+            if (isBulkMode) {
+                var total = bulkEntries.length;
+                var online = bulkEntries.filter(function (e) { return (e.node.conn & 1) !== 0; }).length;
+                var offline = total - online;
+                var ok = bulkEntries.filter(function (e) { return e.status === 'ok'; }).length;
+                var err = bulkEntries.filter(function (e) { return e.status === 'error'; }).length;
+
+                var text = 'Массовый режим · Компьютеров: ' + total + ' (🟢 В сети: ' + online + (offline ? ', 🔴 Не в сети: ' + offline : '') + ')';
+                if (ok > 0 || err > 0) {
+                    text += ' · Завершено: ' + ok + (err ? ', ❌ Ошибок: ' + err : '');
+                }
+                infoEl.textContent = text;
+            } else if (activeNode) {
+                var statusStr = ((activeNode.conn & 1) !== 0) ? '🟢 В сети' : '🔴 Не в сети';
+                infoEl.textContent = (activeNode.name || activeNode._id) + ' (' + (activeNode.ip || 'IP неизвестен') + ') · ' + statusStr + ' · ' + (activeNode.os || 'Windows');
+            }
+        }
+
+        function renderBulkInitialView() {
+            var body = document.getElementById('rtt-chat-body');
+            if (!body) return;
+
+            var onlineCount = bulkEntries.filter(function (e) { return (e.node.conn & 1) !== 0; }).length;
+            var offlineCount = bulkEntries.length - onlineCount;
+
+            var rowsHtml = bulkEntries.map(function (entry, idx) {
+                var isOnline = (entry.node.conn & 1) !== 0;
+                var name = entry.node.name || entry.node._id;
+                var ip = entry.node.ip || '—';
+                var statusClass = 'rtt-badge-' + entry.status;
+                var badgeLabel = entry.result || (isOnline ? 'Ожидание' : 'Не в сети');
+
+                return [
+                    '<div class="rtt-bulk-row" id="rtt-brow-' + idx + '">',
+                    '  <div class="rtt-bulk-dev-info">',
+                    '    <span class="rtt-bulk-dev-icon">' + (isOnline ? '🟢' : '🔴') + '</span>',
+                    '    <strong class="rtt-bulk-dev-name" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</strong>',
+                    '    <span class="rtt-bulk-dev-ip">' + escapeHtml(ip) + '</span>',
+                    '  </div>',
+                    '  <div style="display:flex;align-items:center;gap:8px;">',
+                    '    <span class="rtt-bulk-badge ' + statusClass + '" id="rtt-bbadge-' + idx + '">' + escapeHtml(badgeLabel) + '</span>',
+                    '    <button type="button" class="rtt-bulk-dev-btn" id="rtt-blogbtn-' + idx + '" style="display:none;">Лог</button>',
+                    '  </div>',
+                    '  <pre class="rtt-bulk-log-preview" id="rtt-blogpre-' + idx + '" style="display:none;"></pre>',
+                    '</div>'
+                ].join('\n');
+            }).join('\n');
+
+            body.innerHTML = `
+                <div class="rtt-welcome-card" style="max-width:100%;margin:0 0 14px 0;text-align:left;">
+                  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                    <span style="font-size:28px;">🚑</span>
+                    <div>
+                      <h4 style="margin:0;font-size:16px;">Массовый запуск Реаниматора ТТ</h4>
+                      <p style="margin:2px 0 0;font-size:12px;color:#94a3b8;">
+                        Выбрано компьютеров: <strong>${bulkEntries.length}</strong> (в сети: <strong>${onlineCount}</strong>, не в сети: <strong>${offlineCount}</strong>).
+                      </p>
+                    </div>
+                  </div>
+                  <p style="font-size:13px;color:#cbd5e1;line-height:1.4;margin:0;">
+                    Выберите быстрый сценарий аптеки в панели выше или введите произвольную задачу в строке ввода снизу.<br>
+                    Команды выполняются автономно на всех онлайн-компьютерах без передачи файлов, с автоматическим сбором результатов и аналитическим заключением ИИ.
+                  </p>
+                </div>
+                <div class="rtt-bulk-panel">
+                  <div class="rtt-bulk-summary-bar">
+                    <span>Выбранные устройства (${bulkEntries.length}):</span>
+                    <div class="rtt-bulk-counts">
+                      <span class="rtt-bulk-count-item" style="color:#6ee7b7;">🟢 Онлайн: ${onlineCount}</span>
+                      ${offlineCount > 0 ? '<span class="rtt-bulk-count-item" style="color:#fca5a5;">🔴 Офлайн: ' + offlineCount + '</span>' : ''}
+                    </div>
+                  </div>
+                  <div class="rtt-bulk-list" id="rtt-bulk-list-container">
+                    ${rowsHtml}
+                  </div>
+                </div>
+            `;
+
+            bulkEntries.forEach(function (_, idx) {
+                var btn = document.getElementById('rtt-blogbtn-' + idx);
+                var pre = document.getElementById('rtt-blogpre-' + idx);
+                if (btn && pre) {
+                    btn.onclick = function () {
+                        pre.style.display = (pre.style.display === 'none') ? 'block' : 'none';
+                    };
+                }
+            });
+
+            setStatus('Готов к массовому запуску (' + onlineCount + ' устройств в сети)', false);
+        }
+
+        function updateBulkRow(idx) {
+            var entry = bulkEntries[idx];
+            if (!entry) return;
+            var badge = document.getElementById('rtt-bbadge-' + idx);
+            if (badge) {
+                badge.className = 'rtt-bulk-badge rtt-badge-' + entry.status;
+                badge.textContent = entry.result;
+            }
+            var btn = document.getElementById('rtt-blogbtn-' + idx);
+            var pre = document.getElementById('rtt-blogpre-' + idx);
+            if (btn && pre && (entry.stdout || entry.stderr)) {
+                btn.style.display = 'inline-block';
+                var text = (entry.stdout || '') + (entry.stderr ? '\n[STDERR]: ' + entry.stderr : '');
+                pre.textContent = text;
+            }
+        }
+
+        function openBulkModal() {
+            var ids = [];
+            if (typeof window.getCheckedDevices === 'function') {
+                ids = window.getCheckedDevices();
+            }
+            if (!ids || !ids.length) {
+                if (window.currentNode && window.currentNode._id) {
+                    return openModal(window.currentNode);
+                }
+                alert('Пожалуйста, выберите компьютеры галочками в списке устройств.');
+                return;
+            }
+
+            var nodes = ids.map(function (id) {
+                return (typeof window.getNodeFromId === 'function') ? window.getNodeFromId(id) : null;
+            }).filter(Boolean);
+
+            if (!nodes.length) {
+                alert('Не удалось получить информацию о выбранных устройствах.');
+                return;
+            }
+
+            startBulkSession(nodes);
+        }
+
+        function startBulkSession(nodes) {
+            isBulkMode = true;
+            activeNode = null;
+            conversationHistory = [];
+            isProcessing = false;
+
+            bulkEntries = nodes.map(function (n) {
+                var isOnline = (n.conn & 1) !== 0;
+                return {
+                    node: n,
+                    status: isOnline ? 'pending' : 'offline',
+                    result: isOnline ? 'Ожидает запуска' : 'Не в сети (пропущен)',
+                    stdout: '',
+                    stderr: '',
+                    exitCode: null,
+                    durationMs: 0
+                };
+            });
+
+            createModal();
+            var overlay = document.getElementById('rtt-overlay');
+            if (overlay) overlay.style.display = 'flex';
+
+            updateBulkHeader();
+            renderBulkInitialView();
+            loadSettingsIntoUI();
+            loadQuickScenarios();
+        }
+
+        async function executeBulkTask(title, prompt, scenarioId) {
+            if (isProcessing) return;
+            isProcessing = true;
+            var sendBtn = document.getElementById('rtt-btn-send');
+            if (sendBtn) sendBtn.disabled = true;
+
+            appendMessage('user', '🚑 Запуск сценария «' + title + '» на ' + bulkEntries.length + ' компьютерах');
+
+            var scriptToRun = (scenarioId && standardScenarioScripts[scenarioId]) ? standardScenarioScripts[scenarioId] : null;
+
+            if (!scriptToRun) {
+                setStatus('ИИ формирует команду PowerShell для узлов...', true);
+                var planStep = appendActionStep('Генерация скрипта для компьютеров: ' + title, 'ИИ формирует команду...', 'running');
+                try {
+                    var planRes = await sendServerAction('chatTurn', {
+                        messages: [
+                            {
+                                role: 'system',
+                                content: 'Ты инженер аварийно-восстановительного комплекса Реаниматор ТТ для Windows в аптечной сети. Пользователь просит выполнить задачу на группе компьютеров:\n' + prompt + '\nСформируй ОДНУ надежную, безопасную команду или короткий скрипт PowerShell для решения этой задачи. Скрипт должен возвращать понятный текстовый вывод через Write-Host или вывод объектов. Верни ТОЛЬКО скрипт в блоке ```powershell ... ``` без лишних слов.'
+                            },
+                            {
+                                role: 'user',
+                                content: prompt
+                            }
+                        ],
+                        useTools: false
+                    });
+
+                    var msg = planRes && planRes.message && planRes.message.content;
+                    if (msg) {
+                        var match = msg.match(/```(?:powershell|posh|ps1)?\s*([\s\S]*?)```/i);
+                        scriptToRun = match ? match[1].trim() : msg.trim();
+                    }
+                    if (!scriptToRun) {
+                        updateActionStep(planStep, 'error', 'Не удалось получить скрипт от ИИ');
+                        throw new Error('Пустой ответ модели');
+                    }
+                    updateActionStep(planStep, 'success', scriptToRun);
+                } catch (e) {
+                    appendMessage('system', '❌ Ошибка подготовки скрипта: ' + e.message);
+                    isProcessing = false;
+                    if (sendBtn) sendBtn.disabled = false;
+                    setStatus('Готов к работе', false);
+                    return;
+                }
+            } else {
+                appendActionStep('Сценарий: ' + title, scriptToRun, 'success');
+            }
+
+            var totalOnline = bulkEntries.filter(function (e) { return (e.node.conn & 1) !== 0; }).length;
+            var doneOnline = 0;
+            var okCount = 0;
+            var errCount = 0;
+            var offlineCount = bulkEntries.length - totalOnline;
+
+            setStatus('Выполнение на ' + totalOnline + ' онлайн-компьютерах...', true);
+
+            for (var i = 0; i < bulkEntries.length; i++) {
+                var entry = bulkEntries[i];
+                if ((entry.node.conn & 1) === 0) {
+                    entry.status = 'offline';
+                    entry.result = 'Не в сети (пропущен)';
+                    updateBulkRow(i);
+                    continue;
+                }
+
+                entry.status = 'running';
+                entry.result = 'Выполняется...';
+                updateBulkRow(i);
+                doneOnline++;
+                var devName = entry.node.name || entry.node._id;
+                setStatus('Выполнение на [' + devName + '] (' + doneOnline + '/' + totalOnline + ')...', true);
+
+                try {
+                    var res = await executeRemoteCommand(entry.node._id, scriptToRun);
+                    entry.exitCode = res.exit_code;
+                    entry.stdout = res.stdout || '';
+                    entry.stderr = res.stderr || '';
+                    entry.durationMs = res.duration_ms || 0;
+
+                    if (res.exit_code === 0) {
+                        entry.status = 'ok';
+                        entry.result = '✅ Успешно' + (res.duration_ms ? ' (' + res.duration_ms + ' мс)' : '');
+                        okCount++;
+                    } else {
+                        entry.status = 'error';
+                        entry.result = '❌ Код ' + res.exit_code;
+                        errCount++;
+                    }
+                } catch (e) {
+                    entry.status = 'error';
+                    entry.result = '❌ Ошибка';
+                    entry.stderr = e.message;
+                    errCount++;
+                }
+                updateBulkRow(i);
+            }
+
+            updateBulkHeader();
+
+            var summaryText = '✅ **Массовое выполнение «' + title + '» завершено**\n\n' +
+                '- **Всего устройств:** ' + bulkEntries.length + '\n' +
+                '- **Успешно:** ' + okCount + '\n' +
+                '- **С ошибками / предупреждениями:** ' + errCount + '\n' +
+                '- **Не в сети:** ' + offlineCount + '\n\n' +
+                '*(Нажмите «Лог» напротив любого компьютера в списке выше, чтобы увидеть полный вывод команды)*';
+
+            appendMessage('assistant', summaryText);
+
+            if (okCount > 0 || errCount > 0) {
+                setStatus('ИИ Реаниматор анализирует сводку по сети...', true);
+                try {
+                    var aggregated = bulkEntries.filter(function (e) { return (e.node.conn & 1) !== 0; }).map(function (e) {
+                        var out = (e.stdout || '').trim();
+                        if (out.length > 800) out = out.slice(0, 800) + '... (обрезано)';
+                        var err = (e.stderr || '').trim();
+                        if (err.length > 300) err = err.slice(0, 300) + '...';
+                        return 'Компьютер: ' + (e.node.name || e.node._id) + ' (IP: ' + (e.node.ip || '—') + ')\n' +
+                            'Статус: ' + e.status + ', Код: ' + (e.exitCode !== null ? e.exitCode : 'нет') + '\n' +
+                            'Вывод:\n' + (out || '(пусто)') +
+                            (err ? '\nОшибки:\n' + err : '');
+                    }).join('\n\n---\n\n');
+
+                    var summaryRes = await sendServerAction('chatTurn', {
+                        messages: [
+                            {
+                                role: 'system',
+                                content: 'Ты монолитный ИИ-ассистент Реаниматор ТТ сети аптек (кассы, 1С, АТОЛ, Windows).\nНиже представлены результаты массовой диагностики/выполнения сценария «' + title + '» на компьютерах аптек.\nСделай краткое аналитическое резюме для инженера:\n1. Есть ли критические отклонения или ошибки на каких-то конкретных точках (назови имена компьютеров и суть проблемы)?\n2. Все ли ключевые службы работают штатно?\n3. Конкретные рекомендации по устранению выявленных проблем.'
+                            },
+                            {
+                                role: 'user',
+                                content: 'Сводные данные проверки компьютеров:\n\n' + aggregated
+                            }
+                        ],
+                        useTools: false
+                    });
+
+                    if (summaryRes && summaryRes.message && summaryRes.message.content) {
+                        appendMessage('assistant', '### 📊 Сводный аналитический отчет Реаниматора ТТ\n' + summaryRes.message.content, summaryRes.message.reasoning);
+                    }
+                } catch (e) {
+                    console.warn('[ReanimatorTT] Summary generation error:', e.message);
+                }
+            }
+
+            isProcessing = false;
+            setStatus('Готов к работе', false);
+            if (sendBtn) sendBtn.disabled = false;
+        }
+
         function openModal(node) {
+            isBulkMode = false;
+            bulkEntries = [];
             activeNode = node || window.currentNode;
             if (!activeNode || !activeNode._id) {
                 alert('Пожалуйста, выберите компьютер в MeshCentral.');
@@ -1287,15 +1727,16 @@ function create(parent) {
             createModal();
             var overlay = document.getElementById('rtt-overlay');
             if (overlay) overlay.style.display = 'flex';
-            var infoEl = document.getElementById('rtt-device-info');
-            if (infoEl) {
-                var statusStr = ((activeNode.conn & 1) !== 0) ? '🟢 В сети' : '🔴 Не в сети';
-                infoEl.textContent = (activeNode.name || activeNode._id) + ' (' + (activeNode.ip || 'IP неизвестен') + ') · ' + statusStr + ' · ' + (activeNode.os || 'Windows');
-            }
+            updateBulkHeader();
             clearConversation();
+            loadSettingsIntoUI();
+            loadQuickScenarios();
         }
 
         function closeModal() {
+            if (isProcessing && isBulkMode) {
+                if (!confirm('Массовое выполнение еще выполняется на компьютерах сети. Закрыть окно?')) return;
+            }
             var overlay = document.getElementById('rtt-overlay');
             if (overlay) overlay.style.display = 'none';
         }
@@ -1345,27 +1786,31 @@ function create(parent) {
             }
 
             var bar = document.getElementById('devListToolbar') || document.getElementById('devicesButtonBar');
-            if (bar && !document.getElementById('rtt-bulk-open')) {
-                var bulkBtn = document.createElement('input');
-                bulkBtn.type = 'button';
-                bulkBtn.id = 'rtt-bulk-open';
-                bulkBtn.value = '🚑 Реаниматор ТТ';
-                bulkBtn.title = 'Запустить ИИ Реаниматор на текущем компьютере';
-                bulkBtn.onclick = function () {
-                    openModal(window.currentNode);
-                };
-                var groupBtn = document.getElementById('GroupActionButton') || document.getElementById('sr-open');
-                if (groupBtn && groupBtn.parentNode === bar) {
-                    bar.insertBefore(bulkBtn, groupBtn.nextSibling);
-                } else {
-                    bar.appendChild(bulkBtn);
+            if (bar) {
+                var bulkBtn = document.getElementById('rtt-bulk-open');
+                if (!bulkBtn) {
+                    bulkBtn = document.createElement('input');
+                    bulkBtn.type = 'button';
+                    bulkBtn.id = 'rtt-bulk-open';
+                    bulkBtn.value = '🚑 Реаниматор ТТ';
+                    var groupBtn = document.getElementById('GroupActionButton') || document.getElementById('sr-open');
+                    if (groupBtn && groupBtn.parentNode === bar) {
+                        bar.insertBefore(bulkBtn, groupBtn.nextSibling);
+                    } else {
+                        bar.appendChild(bulkBtn);
+                    }
                 }
+                bulkBtn.title = 'Массовый запуск Реаниматора ТТ на выбранных компьютерах';
+                bulkBtn.onclick = function () {
+                    openBulkModal();
+                };
             }
         }
 
         window.ReanimatorTT = {
             inject: injectButton,
             open: openModal,
+            openBulk: openBulkModal,
             close: closeModal,
             receive: function (message) {
                 if (!message || !message.requestId) return;
