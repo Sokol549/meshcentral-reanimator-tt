@@ -1376,9 +1376,13 @@ function create(parent) {
             var text = inputArea.value.trim();
             if (!text) return;
             inputArea.value = '';
-            appendMessage('user', text);
-            conversationHistory.push({ role: 'user', content: text });
-            processTurn();
+            if (isBulkMode) {
+                executeBulkTask('Пользовательская задача', text, null);
+            } else {
+                appendMessage('user', text);
+                conversationHistory.push({ role: 'user', content: text });
+                processTurn();
+            }
         }
 
         function clearConversation() {
