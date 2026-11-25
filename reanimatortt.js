@@ -6,7 +6,7 @@ const https = require('https');
 const http = require('http');
 const url = require('url');
 
-const PLUGIN_VERSION = '1.0.4';
+const PLUGIN_VERSION = '1.0.5';
 
 function normalizeModelName(m) {
     if (!m || typeof m !== 'string') return 'gpt-6-luna';
@@ -1787,27 +1787,6 @@ function create(parent) {
                 } else {
                     target.appendChild(btn);
                 }
-            }
-
-            var bar = document.getElementById('devListToolbar') || document.getElementById('devicesButtonBar');
-            if (bar) {
-                var bulkBtn = document.getElementById('rtt-bulk-open');
-                if (!bulkBtn) {
-                    bulkBtn = document.createElement('input');
-                    bulkBtn.type = 'button';
-                    bulkBtn.id = 'rtt-bulk-open';
-                    bulkBtn.value = '🚑 Реаниматор ТТ';
-                    var groupBtn = document.getElementById('GroupActionButton') || document.getElementById('sr-open');
-                    if (groupBtn && groupBtn.parentNode === bar) {
-                        bar.insertBefore(bulkBtn, groupBtn.nextSibling);
-                    } else {
-                        bar.appendChild(bulkBtn);
-                    }
-                }
-                bulkBtn.title = 'Массовый запуск Реаниматора ТТ на выбранных компьютерах';
-                bulkBtn.onclick = function () {
-                    openBulkModal();
-                };
             }
         }
 
