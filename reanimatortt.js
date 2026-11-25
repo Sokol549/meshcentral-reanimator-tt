@@ -6,7 +6,7 @@ const https = require('https');
 const http = require('http');
 const url = require('url');
 
-const PLUGIN_VERSION = '1.0.3';
+const PLUGIN_VERSION = '1.0.4';
 
 function normalizeModelName(m) {
     if (!m || typeof m !== 'string') return 'gpt-6-luna';
