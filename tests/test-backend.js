@@ -90,6 +90,73 @@ assert.strictEqual(typeof plugin.serveraction, 'function', 'plugin.serveraction 
 assert.strictEqual(typeof plugin.normalizeModelName, 'function', 'normalizeModelName must be exported or functional');
 console.log('✓ Тест 6: Нормализация моделей проверена');
 
+// Test 7: Hidden customSystemPrompt in settings and UI
+plugin.serveraction({ pluginaction: 'getSettings', requestId: 'req_sys_1' }, adminClient);
+assert.strictEqual(typeof lastClientMsg.settings.customSystemPrompt, 'string');
+assert(lastClientMsg.settings.customSystemPrompt.length > 20, 'Default anti-hallucination customSystemPrompt must be set');
+
+plugin.serveraction({ pluginaction: 'getSettings', requestId: 'req_sys_2' }, regularClient);
+assert.strictEqual(lastClientMsg.settings.customSystemPrompt, undefined, 'Non-admin must not receive customSystemPrompt');
+
+plugin.serveraction({
+    pluginaction: 'saveSettings',
+    requestId: 'req_sys_3',
+    settings: { customSystemPrompt: 'НЕ ВЫДУМЫВАЙ КОМАНДЫ И ЛОГИ' }
+}, adminClient);
+assert.strictEqual(lastClientMsg.type, 'settingsSaved');
+assert.strictEqual(lastClientMsg.success, true);
+assert.strictEqual(lastClientMsg.settings.customSystemPrompt, 'НЕ ВЫДУМЫВАЙ КОМАНДЫ И ЛОГИ');
+assert(webUiSource.includes('rtt-cfg-system-prompt'), 'UI must include rtt-cfg-system-prompt textarea');
+
+// Verify customSystemPrompt is injected into chatTurn requests (both with and without existing system message)
+const https = require('https');
+const origHttpsRequest = https.request;
+let capturedPayloads = [];
+https.request = function (opts, cb) {
+    const EventEmitter = require('events');
+    const req = new EventEmitter();
+    req.setTimeout = function () {};
+    req.write = function (chunk) {
+        try { capturedPayloads.push(JSON.parse(chunk)); } catch (_) {}
+    };
+    req.end = function () {
+        const res = new EventEmitter();
+        res.statusCode = 200;
+        res.setEncoding = function () {};
+        cb(res);
+        res.emit('data', JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] }));
+        res.emit('end');
+    };
+    return req;
+};
+
+plugin.serveraction({
+    pluginaction: 'saveSettings',
+    requestId: 'req_sys_4',
+    settings: { apiKey: 'sk-test-key-1234', baseUrl: 'https://example.com/v1' }
+}, adminClient);
+
+plugin.serveraction({
+    pluginaction: 'chatTurn',
+    requestId: 'req_chat_1',
+    messages: [{ role: 'user', content: 'Проверь диски' }]
+}, adminClient);
+assert.strictEqual(capturedPayloads.length, 1);
+assert(capturedPayloads[0].messages[0].role === 'system');
+assert(capturedPayloads[0].messages[0].content.includes('НЕ ВЫДУМЫВАЙ КОМАНДЫ И ЛОГИ'), 'chatTurn without system msg must include customSystemPrompt');
+
+plugin.serveraction({
+    pluginaction: 'chatTurn',
+    requestId: 'req_chat_2',
+    messages: [{ role: 'system', content: 'Custom bulk role' }, { role: 'user', content: 'Сводка' }]
+}, adminClient);
+assert.strictEqual(capturedPayloads.length, 2);
+assert(capturedPayloads[1].messages[0].content.includes('Custom bulk role'));
+assert(capturedPayloads[1].messages[0].content.includes('НЕ ВЫДУМЫВАЙ КОМАНДЫ И ЛОГИ'), 'chatTurn with existing system msg must also include customSystemPrompt');
+
+https.request = origHttpsRequest;
+console.log('✓ Тест 7: Скрытый системный промпт (настройки, доступ, инъекция в chatTurn) проверен');
+
 // Cleanup
 try {
     const testSettingsFile = path.join(mockDataPath, 'reanimatortt-settings.json');

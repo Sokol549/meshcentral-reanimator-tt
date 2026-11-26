@@ -47,7 +47,14 @@ function create(parent) {
         cmdTimeoutSeconds: 180,
         temperature: 0.2,
         maxTokens: 4096,
-        requireDangerConfirmation: true
+        requireDangerConfirmation: true,
+        customSystemPrompt: [
+            'СТРОГИЕ ПРАВИЛА ПРОТИВ ГАЛЛЮЦИНАЦИЙ:',
+            '1. Опирайся ТОЛЬКО на реальный вывод выполненных команд (stdout/stderr) и факты из контекста.',
+            '2. НИКОГДА не выдумывай имена служб, пути к файлам, ключи реестра, коды ошибок или результаты проверок, которые ты не запускал.',
+            '3. Если данных недостаточно или команда вернула пустой вывод — прямо напиши об этом и при необходимости выполни дополнительную проверку.',
+            '4. Отвечай кратко, технически точно и без домыслов.'
+        ].join('\n')
     };
 
     function loadSettings() {
@@ -121,7 +128,11 @@ function create(parent) {
             '',
             'БАЗА ЗНАНИЙ АПТЕЧНОЙ СЕТИ:',
             knowledgeBaseText ? knowledgeBaseText.slice(0, 30000) : 'База знаний 1С 8.3, АТОЛ EoUService, сканеров, эквайринга и Windows.'
-        ].join('\n');
+        ].concat(
+            (config.customSystemPrompt && config.customSystemPrompt.trim())
+                ? ['', 'ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ АДМИНИСТРАТОРА:', config.customSystemPrompt.trim()]
+                : []
+        ).join('\n');
     }
 
     function getToolDefinitions() {
@@ -266,8 +277,11 @@ function create(parent) {
 
         if (action === 'getSettings') {
             const safeConfig = Object.assign({}, config);
-            if (!isAdmin && safeConfig.apiKey) {
-                safeConfig.apiKey = safeConfig.apiKey.slice(0, 6) + '...' + safeConfig.apiKey.slice(-4);
+            if (!isAdmin) {
+                if (safeConfig.apiKey) {
+                    safeConfig.apiKey = safeConfig.apiKey.slice(0, 6) + '...' + safeConfig.apiKey.slice(-4);
+                }
+                delete safeConfig.customSystemPrompt;
             }
             sendToClient(client, {
                 type: 'settings',
@@ -295,6 +309,7 @@ function create(parent) {
             if (typeof s.temperature === 'number' && s.temperature >= 0 && s.temperature <= 1) clean.temperature = s.temperature;
             if (Number.isInteger(s.maxTokens) && s.maxTokens >= 512 && s.maxTokens <= 32768) clean.maxTokens = s.maxTokens;
             if (typeof s.requireDangerConfirmation === 'boolean') clean.requireDangerConfirmation = s.requireDangerConfirmation;
+            if (typeof s.customSystemPrompt === 'string') clean.customSystemPrompt = s.customSystemPrompt.trim().slice(0, 8000);
 
             const saved = saveSettings(clean);
             sendToClient(client, {
@@ -313,13 +328,27 @@ function create(parent) {
 
             let finalMessages = [];
             const hasSystem = incomingMessages.some(m => m.role === 'system');
+            const customPrompt = (config.customSystemPrompt && config.customSystemPrompt.trim()) ? config.customSystemPrompt.trim() : '';
             if (!hasSystem) {
                 finalMessages.push({
                     role: 'system',
                     content: getSystemPrompt(deviceContext)
                 });
+                finalMessages = finalMessages.concat(incomingMessages);
+            } else if (customPrompt) {
+                let injected = false;
+                finalMessages = incomingMessages.map(m => {
+                    if (!injected && m.role === 'system') {
+                        injected = true;
+                        return Object.assign({}, m, {
+                            content: (m.content ? m.content + '\n\n' : '') + 'ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ АДМИНИСТРАТОРА:\n' + customPrompt
+                        });
+                    }
+                    return m;
+                });
+            } else {
+                finalMessages = finalMessages.concat(incomingMessages);
             }
-            finalMessages = finalMessages.concat(incomingMessages);
 
             const tools = useTools ? getToolDefinitions() : null;
 
@@ -610,10 +639,11 @@ function create(parent) {
             .rtt-settings-header h4 { margin: 0; font-size: 14px; color: #ffffff; }
             .rtt-settings-content { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; font-size: 12px; }
             .rtt-settings-content label { display: flex; flex-direction: column; gap: 4px; color: #d1d5db; font-weight: 500; }
-            .rtt-settings-content input[type="text"], .rtt-settings-content input[type="url"], .rtt-settings-content input[type="password"], .rtt-settings-content input[type="number"] {
+            .rtt-settings-content input[type="text"], .rtt-settings-content input[type="url"], .rtt-settings-content input[type="password"], .rtt-settings-content input[type="number"], .rtt-settings-content textarea {
                 background: #111827; border: 1px solid #4b5563; border-radius: 4px; padding: 8px 10px; color: #ffffff; font-size: 13px; outline: none;
             }
-            .rtt-settings-content input:focus { border-color: #e11d48; }
+            .rtt-settings-content textarea { font-size: 12px; font-family: inherit; line-height: 1.4; resize: vertical; }
+            .rtt-settings-content input:focus, .rtt-settings-content textarea:focus { border-color: #e11d48; }
             .rtt-settings-row { display: flex; gap: 10px; }
             .rtt-settings-row label { flex: 1; }
             .rtt-checkbox-label { flex-direction: row !important; align-items: center; gap: 8px !important; cursor: pointer; }
@@ -1057,6 +1087,9 @@ function create(parent) {
                         <input id="rtt-cfg-confirm" type="checkbox" checked>
                         <span>Запрашивать подтверждение перед изменением системы</span>
                       </label>
+                      <label id="rtt-cfg-system-prompt-wrap">Скрытый системный промпт (отправляется с каждым сообщением)
+                        <textarea id="rtt-cfg-system-prompt" rows="4" maxlength="8000" placeholder="Дополнительная инструкция, которая скрыто отправляется ИИ с каждым запросом..."></textarea>
+                      </label>
                       <div class="rtt-settings-actions">
                         <button id="rtt-cfg-save" class="rtt-btn rtt-btn-primary" type="button">Сохранить</button>
                       </div>
@@ -1105,6 +1138,8 @@ function create(parent) {
                     var cmdTimeoutInput = document.getElementById('rtt-cfg-cmd-timeout');
                     var tempInput = document.getElementById('rtt-cfg-temp');
                     var confirmInput = document.getElementById('rtt-cfg-confirm');
+                    var sysPromptInput = document.getElementById('rtt-cfg-system-prompt');
+                    var sysPromptWrap = document.getElementById('rtt-cfg-system-prompt-wrap');
 
                     if (urlInput) urlInput.value = res.settings.baseUrl || '';
                     if (keyInput) keyInput.value = res.settings.apiKey || '';
@@ -1113,6 +1148,15 @@ function create(parent) {
                     if (cmdTimeoutInput) cmdTimeoutInput.value = res.settings.cmdTimeoutSeconds || 180;
                     if (tempInput) tempInput.value = res.settings.temperature || 0.2;
                     if (confirmInput) confirmInput.checked = res.settings.requireDangerConfirmation !== false;
+                    if (sysPromptInput) {
+                        if (isAdminUser) {
+                            sysPromptInput.value = res.settings.customSystemPrompt || '';
+                            if (sysPromptWrap) sysPromptWrap.style.display = 'flex';
+                        } else {
+                            sysPromptInput.value = '';
+                            if (sysPromptWrap) sysPromptWrap.style.display = 'none';
+                        }
+                    }
 
                     if (!isAdminUser) {
                         var saveBtn = document.getElementById('rtt-cfg-save');
@@ -1133,6 +1177,7 @@ function create(parent) {
             var cmdTimeoutInput = document.getElementById('rtt-cfg-cmd-timeout');
             var tempInput = document.getElementById('rtt-cfg-temp');
             var confirmInput = document.getElementById('rtt-cfg-confirm');
+            var sysPromptInput = document.getElementById('rtt-cfg-system-prompt');
 
             var newCfg = {
                 baseUrl: urlInput ? urlInput.value.trim() : '',
@@ -1141,7 +1186,8 @@ function create(parent) {
                 timeoutSeconds: timeoutInput ? parseInt(timeoutInput.value, 10) : 60,
                 cmdTimeoutSeconds: cmdTimeoutInput ? parseInt(cmdTimeoutInput.value, 10) : 180,
                 temperature: tempInput ? parseFloat(tempInput.value) : 0.2,
-                requireDangerConfirmation: confirmInput ? confirmInput.checked : true
+                requireDangerConfirmation: confirmInput ? confirmInput.checked : true,
+                customSystemPrompt: sysPromptInput ? sysPromptInput.value.trim() : ''
             };
 
             sendServerAction('saveSettings', { settings: newCfg }).then(function (res) {
