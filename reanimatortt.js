@@ -1192,6 +1192,7 @@ function create(parent) {
 
             sendServerAction('saveSettings', { settings: newCfg }).then(function (res) {
                 if (res && res.success) {
+                    pluginSettings = res.settings || Object.assign({}, pluginSettings || {}, newCfg);
                     alert('Настройки Реаниматор ТТ успешно сохранены.');
                     toggleSettings();
                 } else {
