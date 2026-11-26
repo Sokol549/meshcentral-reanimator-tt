@@ -841,7 +841,16 @@ function create(parent) {
                     if (err) reject(err); else resolve(data);
                 }
 
-                var cmdTimeoutSec = (pluginSettings && pluginSettings.cmdTimeoutSeconds) ? pluginSettings.cmdTimeoutSeconds : 180;
+                // Read timeout from pluginSettings; fall back to UI field value (if loaded) or hard default
+                var cmdTimeoutSec = 180;
+                if (pluginSettings && pluginSettings.cmdTimeoutSeconds) {
+                    cmdTimeoutSec = pluginSettings.cmdTimeoutSeconds;
+                } else {
+                    var _uiField = document.getElementById('rtt-cfg-cmd-timeout');
+                    if (_uiField && parseInt(_uiField.value, 10) >= 15) {
+                        cmdTimeoutSec = parseInt(_uiField.value, 10);
+                    }
+                }
                 timeoutTimer = setTimeout(function () {
                     finish(new Error('Таймаут выполнения команды на компьютере (' + cmdTimeoutSec + ' сек)'));
                 }, cmdTimeoutSec * 1000);

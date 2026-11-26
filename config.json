@@ -1,7 +1,7 @@
 {
   "name": "MeshCentral Reanimator TT (AI)",
   "shortName": "reanimatortt",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "author": "sokol549",
   "description": "Автономный ИИ-агент экстренной диагностики и восстановления аптечных касс и серверов (Реаниматор ТТ) прямо из карточки статуса компьютера без передачи файлов на целевое устройство.",
   "hasAdminPanel": false,
